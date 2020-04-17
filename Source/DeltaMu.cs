@@ -26,6 +26,11 @@ namespace DeltaMu {
 		[KSPField]
 		public string ShapeKeyTransform;
 
+		public struct ShapeKey {
+			public string name;
+			public float weight;
+		}
+
 		public override void OnLoad (ConfigNode node)
 		{
 			if (HighLogic.LoadedScene == GameScenes.LOADING) {
@@ -39,12 +44,12 @@ namespace DeltaMu {
 					Debug.Log($"[DeltaMu] could not find {ShapeKeyTransform}");
 					return;
 				}
-				BuildShapeKeys (skTrans);
+				BuildShapeKeys (skTrans, node.GetNode ("ShapeKeys"));
 				return;
 			}
 		}
 
-		Mesh BuildShapeKeys (Mesh inputMesh)
+		Mesh BuildShapeKeys (Mesh inputMesh, ShapeKey []keys)
 		{
 			var mesh = new Mesh();
 			var verts = inputMesh.vertices;
@@ -61,7 +66,14 @@ namespace DeltaMu {
 			}
 			int numVerts = verts.Length;
 			int baseVerts = maxVert + 1;
-			int numKeys = numVerts / baseVerts;
+			int numKeys = numVerts / baseVerts - 1;
+
+			if (numKeys != keys.Length) {
+				Debug.Log($"[DeltaMu] {part.name}:{ShapeKeyTransform}: keys mismatch: data:{numKeys} vs cfg:{keys.Length}");
+				if (numKeys == keys.Length - 1) {
+					Debug.Log("Make sure you did not include the basis shape");
+				}
+			}
 			var newVerts = new Vector3[baseVerts];
 			var newNorms = new Vector3[baseVerts];
 			var newTangs = new Vector4[baseVerts];
@@ -80,25 +92,39 @@ namespace DeltaMu {
 			mesh.uv = newUVs;
 			mesh.triangles = triangles;
 			var deltaT = new Vector3[baseVerts];
-			for (int i = 1; i < numKeys; i++) {
-				Debug.Log($"[DeltaMu] key: {i}");
-				int base_index = i * baseVerts;
+			for (int i = 0; i < numKeys; i++) {
+				int base_index = (i + 1) * baseVerts;
 				for (int j = 0; j < baseVerts; j++) {
 					newVerts[j] = verts[j + base_index];
 					newNorms[j] = norms[j + base_index];
 					Vector4 t = tangs[j + base_index];
 					deltaT[j] = new Vector3(t.x, t.y, t.z);
-					Debug.Log($"[DeltaMu] vertr[{j}]: {newVerts[j]}");
 				}
-				mesh.AddBlendShapeFrame(i.ToString(), 1, newVerts, newNorms, deltaT);
+				if (i < keys.Length) {
+					mesh.AddBlendShapeFrame(keys[i].name, keys[i].weight,
+											newVerts, newNorms, deltaT);
+				} else {
+					mesh.AddBlendShapeFrame(i.ToString(), 1,
+											newVerts, newNorms, deltaT);
+				}
 			}
 			mesh.RecalculateBounds();
 			mesh.UploadMeshData (false);
 			return mesh;
 		}
 
-		void BuildShapeKeys (Transform skTrans)
+		void BuildShapeKeys (Transform skTrans, ConfigNode keyNode)
 		{
+			int keyCount = 0;
+			if (keyNode != null) {
+				keyCount = keyNode.values.Count;
+			}
+			var keys = new ShapeKey[keyCount];
+			for (int i = 0; i < keys.Length; i++) {
+				var value = keyNode.values[i];
+				keys[i].name = value.name;
+				float.TryParse (value.value, out keys[i].weight);
+			}
 			GameObject go = skTrans.gameObject;
 			var smr = go.GetComponent<SkinnedMeshRenderer> ();
 			if (!smr) {
@@ -110,13 +136,13 @@ namespace DeltaMu {
 					return;
 				}
 				smr = go.AddComponent<SkinnedMeshRenderer> ();
-				smr.sharedMesh = BuildShapeKeys (mf.sharedMesh);
+				smr.sharedMesh = BuildShapeKeys (mf.sharedMesh, keys);
 				smr.sharedMaterial = r.sharedMaterial;
 				r.sharedMaterial = null;
 				Destroy (mf);
 				Destroy (r);
 			} else {
-				smr.sharedMesh = BuildShapeKeys (smr.sharedMesh);
+				smr.sharedMesh = BuildShapeKeys (smr.sharedMesh, keys);
 			}
 			Debug.Log ($"[DeltaMu] {smr.sharedMesh.blendShapeCount}");
 		}
