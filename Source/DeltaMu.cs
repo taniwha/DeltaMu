@@ -17,6 +17,8 @@ along with DeltaMu.  If not, see
 */
 using System;
 using System.Collections;
+using System.Collections.Generic;
+using System.Reflection;
 using UnityEngine;
 
 namespace DeltaMu {
@@ -31,6 +33,70 @@ namespace DeltaMu {
 			public float weight;
 		}
 
+		public class BlendShape {
+			public string name;
+			[UI_FloatRange (minValue = 0, maxValue = 1, stepIncrement = 0.05f)]
+			[KSPField(guiActive=true, guiActiveEditor=true)]
+			public float weight;
+			public SkinnedMeshRenderer shapeMesh;
+			public int shapeIndex;
+
+			public BlendShape(string name, int index, SkinnedMeshRenderer shapeMesh)
+			{
+				this.name = name;
+				this.weight = 1;
+				this.shapeIndex = index;
+				this.shapeMesh = shapeMesh;
+			}
+			public void ModifyValue (BaseField bf, object field)
+			{
+				shapeMesh.SetBlendShapeWeight(shapeIndex, weight);
+			}
+			public BaseField GetField()
+			{
+				var fields = new BaseFieldList (this);
+				BaseField bf= fields[0];
+				bf.guiName = name;
+				UI_Control control = null;
+				if (HighLogic.LoadedSceneIsEditor) {
+					control = bf.uiControlEditor;
+				} else if (HighLogic.LoadedSceneIsFlight) {
+					control = bf.uiControlFlight;
+				}
+				if (control != null) {
+					control.onFieldChanged += ModifyValue;
+				}
+				return bf;
+			}
+		}
+
+		Dictionary<string, BlendShape> blendShapeDict;
+		List<BlendShape> blendShapeList;
+
+		public float this[int index]
+		{
+			get { return blendShapeList[index].weight; }
+			set { blendShapeList[index].weight = value; }
+		}
+
+		public float this[string name]
+		{
+			get { return blendShapeDict[name].weight; }
+			set { blendShapeDict[name].weight = value; }
+		}
+
+		new void Awake ()
+		{
+			base.Awake ();
+			if (HighLogic.LoadedSceneIsGame) {
+				blendShapeDict = new Dictionary<string, BlendShape> ();
+				blendShapeList = new List<BlendShape> ();
+			}
+		}
+
+		[SerializeField]
+		string keyNodeString;
+
 		public override void OnLoad (ConfigNode node)
 		{
 			if (HighLogic.LoadedScene == GameScenes.LOADING) {
@@ -44,7 +110,11 @@ namespace DeltaMu {
 					Debug.Log($"[DeltaMu] could not find {ShapeKeyTransform}");
 					return;
 				}
-				BuildShapeKeys (skTrans, node.GetNode ("ShapeKeys"));
+				ConfigNode keyNode = node.GetNode ("ShapeKeys");
+				BuildShapeKeys (skTrans, keyNode);
+				if (keyNode != null) {
+					keyNodeString = keyNode.ToString ();
+				}
 				return;
 			}
 		}
@@ -147,25 +217,52 @@ namespace DeltaMu {
 			Debug.Log ($"[DeltaMu] {smr.sharedMesh.blendShapeCount}");
 		}
 
-		float startTime;
-
-		void Start ()
+		void BuildBlendShapes ()
 		{
-			startTime = Time.unscaledTime;
+			ConfigNode keyNode = null;
+			if (!String.IsNullOrEmpty (keyNodeString)) {
+				keyNode = ConfigNode.Parse (keyNodeString).nodes[0];
+			}
+			int keyCount = 0;
+			if (keyNode != null) {
+				keyCount = keyNode.values.Count;
+			}
+			int index = 0;
+			for (int i = 0; i < keyCount; i++) {
+				var value = keyNode.values[i];
+				if (!blendShapeDict.ContainsKey (value.name)) {
+					var bs = new BlendShape(value.name, index++, shapeMesh);
+					blendShapeDict[value.name] = bs;
+					blendShapeList.Add (bs);
+				}
+			}
+			while (index < shapeMesh.sharedMesh.blendShapeCount) {
+				var bs = new BlendShape(index.ToString (), index++, shapeMesh);
+				blendShapeList.Add (bs);
+			}
 		}
 
-		void Update ()
+		//float startTime;
+		SkinnedMeshRenderer shapeMesh;
+
+		public override void OnStart (StartState state)
 		{
-			float time = (Time.unscaledTime - startTime);
 			var skTrans = part.FindModelTransform (ShapeKeyTransform);
-			GameObject go = skTrans.gameObject;
-			var smr = go.GetComponent<SkinnedMeshRenderer> ();
-			int count = smr.sharedMesh.blendShapeCount;
-			for (int i = 0; i < count; i++) {
-				float n = 2 * i + 1;
-				float d = 2 * Mathf.PI;
-				float w = 0.5f - Mathf.Cos (5 * time * n / d) * 0.5f;
-				smr.SetBlendShapeWeight(i, w);
+			if (skTrans == null) {
+				Debug.Log ("[DeltaMu] {part.name}:{ShapeKeyTransform} not found");
+				enabled = false;
+				return;
+			}
+			shapeMesh = skTrans.gameObject.GetComponent<SkinnedMeshRenderer>();
+			if (shapeMesh == null) {
+				Debug.Log ("[DeltaMu] {part.name}:{ShapeKeyTransform} no SMR");
+				enabled = false;
+				return;
+			}
+			BuildBlendShapes ();
+			for (int i = 0; i < blendShapeList.Count; i++) {
+				var bf = blendShapeList[i].GetField ();
+				Fields.Add (bf);
 			}
 		}
 	}
